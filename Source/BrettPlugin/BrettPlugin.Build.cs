@@ -45,6 +45,7 @@ namespace UnrealBuildTool.Rules
 					"LandscapeEditor",
 					"TargetPlatform",
 					"BlueprintGraph",
+					"LandscapeEditor",
 					// ... add private dependencies that you statically link with here ...
 				}
 				);

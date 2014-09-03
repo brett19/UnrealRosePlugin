@@ -12,6 +12,7 @@
 #include "Chr.h"
 #include "Him.h"
 #include "Ifo.h"
+#include "Til.h"
 
 DEFINE_LOG_CATEGORY(RosePlugin);
 
@@ -801,7 +802,14 @@ UK2Node_VariableGet* CreateVarGetNode(UEdGraph* Graph, const FName& VariableName
 	return GetVarNode;
 }
 
-UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs, int modelIdx) {
+template<typename CurveType>
+CurveType* CreateCurveObject(UObject* PackagePtr, FName& AssetName)
+{
+	return CastChecked<CurveType>(StaticConstructObject(CurveType::StaticClass(), PackagePtr, AssetName, RF_Transient));
+}
+
+
+UBlueprint* ImportWorldZscModel(const FString& MdlTypeName, const Zsc& meshs, int modelIdx) {
 	const Zsc::Model& model = meshs.models[modelIdx];
 
 	FString BPPackageName = TEXT("/MAPS");
@@ -917,6 +925,7 @@ UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs
 
 		// Per-poly collision for now
 		StaticMesh->BodySetup->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
+		StaticMesh->BodySetup->bDoubleSidedGeometry = true;
 
 		// refresh collision change back to staticmesh components
 		RefreshCollisionChange(StaticMesh);
@@ -928,8 +937,12 @@ UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs
 			StaticMesh->SectionInfoMap.Set(0, SectionIndex, Info);
 		}
 
-		UStaticMeshComponent* MeshComp = ConstructObject<UStaticMeshComponent>(UStaticMeshComponent::StaticClass());
+		FString MeshCompNameX = FString::Printf(TEXT("Part_%d_Component"), j);
+		UStaticMeshComponent* MeshComp = 
+			(UStaticMeshComponent*)StaticConstructObject(UStaticMeshComponent::StaticClass(),
+			BPPackage, *MeshCompNameX, RF_Transient);
 		MeshComp->StaticMesh = StaticMesh;
+		
 		FString MeshCompName = FString::Printf(TEXT("Part_%d"), j);
 		USCS_Node* MeshNode = Blueprint->SimpleConstructionScript->CreateNode(MeshComp, *MeshCompName);
 		if (RootNode) {
@@ -942,6 +955,22 @@ UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs
 		MeshComp->SetRelativeLocationAndRotation(part.position, FRotator(part.rotation));
 		MeshComp->SetRelativeScale3D(part.scale);
 
+		if (part.animPath.IsEmpty()) {
+			MeshComp->SetMobility(EComponentMobility::Static);
+		} else {
+			MeshComp->SetMobility(EComponentMobility::Movable);
+		}
+
+		if (part.collisionType & Zsc::CollisionType::ModeMask) {
+			MeshComp->SetCollisionResponseToAllChannels(ECR_Block);
+			if (part.collisionType & Zsc::CollisionType::NoCameraCollide) {
+				MeshComp->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+			}
+		} else {
+			MeshComp->SetCollisionResponseToAllChannels(ECR_Ignore);
+		}
+
+		// Import any animations
 		if (!part.animPath.IsEmpty())
 		{
 			FString EGName = FString::Printf(TEXT("Part_%d_EG"), j);
@@ -961,9 +990,12 @@ UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs
 			TLTmpl->bAutoPlay = true;
 			TLTmpl->TimelineLength = (float)anim.frameCount / (float)anim.framesPerSecond;
 
-			UCurveVector* RCurve = NewObject<UCurveVector>(TLTmpl);
-			UCurveVector* PCurve = NewObject<UCurveVector>(TLTmpl);
-			UCurveVector* SCurve = NewObject<UCurveVector>(TLTmpl);
+			FName RCurveName = *FString::Printf(TEXT("Curve_%d_Rot"), j);
+			FName PCurveName = *FString::Printf(TEXT("Curve_%d_Pos"), j);
+			FName SCurveName = *FString::Printf(TEXT("Curve_%d_Scale"), j);
+			UCurveVector* RCurve = CreateCurveObject<UCurveVector>(BPPackage, RCurveName);
+			UCurveVector* PCurve = CreateCurveObject<UCurveVector>(BPPackage, PCurveName);
+			UCurveVector* SCurve = CreateCurveObject<UCurveVector>(BPPackage, SCurveName);
 			bool UsesRotation = false;
 			bool UsesPosition = false;
 			bool UsesScale = false;
@@ -995,15 +1027,15 @@ UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs
 					FRotator prevFrame;
 					for (int j = 0; j < rotChannel->frames.Num(); ++j) {
 						FRotator frame = rotChannel->frames[j].Rotator();
-						if (j == 0 || frame.Pitch != prevFrame.Pitch) {
+						//if (j == 0 || frame.Pitch != prevFrame.Pitch) {
 							RCurve->FloatCurves[0].AddKey((float)j / (float)anim.framesPerSecond, frame.Pitch, true);
-						}
-						if (j == 0 || frame.Yaw != prevFrame.Yaw) {
+						//}
+						//if (j == 0 || frame.Yaw != prevFrame.Yaw) {
 							RCurve->FloatCurves[1].AddKey((float)j / (float)anim.framesPerSecond, frame.Yaw, true);
-						}
-						if (j == 0 || frame.Roll != prevFrame.Roll) {
+						//}
+						//if (j == 0 || frame.Roll != prevFrame.Roll) {
 							RCurve->FloatCurves[2].AddKey((float)j / (float)anim.framesPerSecond, frame.Roll, true);
-						}
+						//}
 						prevFrame = frame;
 					}
 				} else if (channel->type() == Zmo::ChannelType::Scale) {
@@ -1087,601 +1119,6 @@ UBlueprint* ImportWorldZscModelAnim(const FString& MdlTypeName, const Zsc& meshs
 	}
 
 	return Blueprint;
-
-	/*
-	const Zsc::Model& model = meshs.models[modelIdx];
-
-	FString ModelPackageName, ModelName;
-	ModelPackageName = TEXT("/MAPS");
-	ModelName = FString::Printf(TEXT("%s_%d"), *MdlTypeName, modelIdx);
-
-	UPackage* ModelPackage = GetOrMakePackage(ModelPackageName, ModelName);
-	if (ModelPackage == NULL) {
-		return NULL;
-	}
-
-	USkeletalMesh* SkeletalMesh = CastChecked<USkeletalMesh>(
-		StaticConstructObject(USkeletalMesh::StaticClass(), ModelPackage, *ModelName, RF_Standalone | RF_Public));
-	if (SkeletalMesh == NULL) {
-		return NULL;
-	}
-
-	// Notify the asset registry
-	FAssetRegistryModule::AssetCreated(SkeletalMesh);
-
-	// Set the dirty flag so this package will get saved later
-	SkeletalMesh->MarkPackageDirty();
-
-	SkeletalMesh->PreEditChange(NULL);
-
-	TArray<int32> PartBones;
-	//int32 BoneIndex = 0;
-	for (int i = 0; i < model.parts.Num(); ++i) {
-		const Zsc::Part& part = model.parts[i];
-		const Zsc::Texture& tex = meshs.textures[part.texIdx];
-
-		if (i == 0 || !part.animPath.IsEmpty()) {
-			PartBones.Add(i);
-		} else {
-			int32 BoneParent = PartBones[part.parentIdx - 1];
-			PartBones.Add(BoneParent);
-		}
-
-		FString TexturePackage, TextureName;
-		BuildAssetPath(TexturePackage, TextureName, tex.filePath, "_Texture");
-		UTexture* UnrealTexture = ImportTexture(TexturePackage, TextureName, RoseBasePath + tex.filePath);
-
-		FString MaterialPackage, MaterialName;
-		BuildAssetPath(MaterialPackage, MaterialName, meshs.meshes[part.meshIdx]);
-		MaterialName = FString::Printf(TEXT("Model_%d_%d_Material"), modelIdx, i);
-		UMaterialInterface *UnrealMaterial = ImportMaterial(MaterialPackage, MaterialName, tex, UnrealTexture);
-
-		SkeletalMesh->Materials.Add(UnrealMaterial);
-	}
-
-
-	FReferenceSkeleton& RefSkeleton = SkeletalMesh->RefSkeleton;
-	for (int i = 0; i < model.parts.Num(); ++i) {
-		const Zsc::Part& part = model.parts[i];
-
-		int32 ueParent = (i > 0) ? part.parentIdx - 1 : INDEX_NONE;
-		FString BoneName = FString::Printf(TEXT("Part_%d"), i);
-		const FMeshBoneInfo BoneInfo(FName(*BoneName, FNAME_Add, true), *BoneName, ueParent);
-		const FTransform BoneTransform(part.rotation, part.position, part.scale);
-
-		RefSkeleton.Add(BoneInfo, BoneTransform);
-	}
-	SkeletalMesh->CalculateInvRefMatrices();
-
-	USkeleton* Skeleton = NULL;
-	{
-		FString SkeletonName = ModelName + "_Skeleton";
-
-		UPackage* SkelPackage = GetOrMakePackage(ModelPackageName, SkeletonName);
-		if (SkelPackage == NULL) {
-			return NULL;
-		}
-
-		Skeleton = CastChecked<USkeleton>(StaticConstructObject(USkeleton::StaticClass(), SkelPackage, *SkeletonName, RF_Standalone | RF_Public));
-		if (Skeleton == NULL) {
-			return NULL;
-		}
-
-		// Notify the asset registry
-		FAssetRegistryModule::AssetCreated(Skeleton);
-
-		// Set the dirty flag so this package will get saved later
-		Skeleton->MarkPackageDirty();
-
-		Skeleton->MergeAllBonesToBoneTree(SkeletalMesh);
-	}
-
-	{
-		FSkeletalMeshResource* ImportedResource = SkeletalMesh->GetImportedResource();
-		check(ImportedResource->LODModels.Num() == 0);
-		ImportedResource->LODModels.Empty();
-		new(ImportedResource->LODModels)FStaticLODModel();
-
-		SkeletalMesh->LODInfo.Empty();
-		SkeletalMesh->LODInfo.AddZeroed();
-		SkeletalMesh->LODInfo[0].LODHysteresis = 0.02f;
-		FSkeletalMeshOptimizationSettings Settings;
-		// set default reduction settings values
-		SkeletalMesh->LODInfo[0].ReductionSettings = Settings;
-
-		SkeletalMesh->bHasVertexColors = false;
-
-		FStaticLODModel& LODModel = ImportedResource->LODModels[0];
-		LODModel.NumTexCoords = 1;
-
-		IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
-
-		TArray<FVector> LODPoints;
-		TArray<FMeshWedge> LODWedges;
-		TArray<FMeshFace> LODFaces;
-		TArray<FVertInfluence> LODInfluences;
-		TArray<int32> LODPointToRawMap;
-
-		TArray<FTransform> partTrans;
-		for (int j = 0; j < model.parts.Num(); ++j) {
-			const Zsc::Part& part = model.parts[j];
-
-			FTransform trans(part.rotation, part.position, part.scale);
-			if (j != 0 && part.parentIdx != 0xFFFF) {
-				trans = partTrans[part.parentIdx - 1] * trans;
-			}
-			partTrans.Add(trans);
-
-			Zms meshZms(*(RoseBasePath + meshs.meshes[part.meshIdx]));
-
-			int vertOffset = LODPoints.Num();
-			LODPoints.AddZeroed(meshZms.vertexPositions.Num());
-			LODPointToRawMap.AddZeroed(meshZms.vertexPositions.Num());
-			for (int i = 0; i < meshZms.vertexPositions.Num(); ++i) {
-				LODPoints[vertOffset + i] = trans.TransformPosition(meshZms.vertexPositions[i]);
-				LODPointToRawMap[vertOffset + i] = vertOffset + i;
-			}
-
-			int infOffset = LODInfluences.Num();
-			LODInfluences.AddZeroed(meshZms.vertexPositions.Num());
-			uint16 BoneIndex = PartBones[j];
-			for (int i = 0; i < meshZms.vertexPositions.Num(); ++i) {
-				LODInfluences[infOffset + i].BoneIndex = BoneIndex;
-				LODInfluences[infOffset + i].VertIndex = vertOffset + i;
-				LODInfluences[infOffset + i].Weight = 1;
-			}
-
-			int indexOffset = LODWedges.Num();
-			LODWedges.AddZeroed(meshZms.indexes.Num());
-			for (int i = 0; i < meshZms.indexes.Num(); ++i) {
-				LODWedges[indexOffset + i].iVertex = vertOffset + meshZms.indexes[i];
-			}
-			for (int k = 0; k < 1; ++k) {
-				if (meshZms.vertexUvs[k].Num() > 0) {
-					for (int i = 0; i < meshZms.indexes.Num(); ++i) {
-						LODWedges[indexOffset + i].UVs[k] = meshZms.vertexUvs[k][meshZms.indexes[i]];
-					}
-				}
-			}
-
-			int faceCount = meshZms.indexes.Num() / 3;
-			int faceOffset = LODFaces.Num();
-			LODFaces.AddZeroed(faceCount);
-			for (int i = 0; i < faceCount; ++i) {
-				LODFaces[faceOffset + i].iWedge[0] = indexOffset + (i * 3) + 0;
-				LODFaces[faceOffset + i].iWedge[1] = indexOffset + (i * 3) + 1;
-				LODFaces[faceOffset + i].iWedge[2] = indexOffset + (i * 3) + 2;
-				LODFaces[faceOffset + i].MeshMaterialIndex = j;
-				//LODFaces[faceOffset + i].TangentZ[0] = trans.TransformVector(meshZms.vertexNormals[meshZms.indexes[i * 3 + 0]]);
-				//LODFaces[faceOffset + i].TangentZ[1] = trans.TransformVector(meshZms.vertexNormals[meshZms.indexes[i * 3 + 1]]);
-				//LODFaces[faceOffset + i].TangentZ[2] = trans.TransformVector(meshZms.vertexNormals[meshZms.indexes[i * 3 + 2]]);
-			}
-		}
-
-
-		TArray<FText> WarningMessages;
-		TArray<FName> WarningNames;
-		// Create actual rendering data.
-		if (!MeshUtilities.BuildSkeletalMesh(
-			ImportedResource->LODModels[0],
-			SkeletalMesh->RefSkeleton,
-			LODInfluences, LODWedges, LODFaces, LODPoints, LODPointToRawMap,
-			false, true, true, &WarningMessages, &WarningNames))
-		{
-			DebugBreak();
-		} else if (WarningMessages.Num() > 0)
-		{
-			DebugBreak();
-		}
-
-		const int32 NumSections = LODModel.Sections.Num();
-		for (int32 SectionIndex = 0; SectionIndex < NumSections; ++SectionIndex)
-		{
-			SkeletalMesh->LODInfo[0].TriangleSortSettings.AddZeroed();
-		}
-
-
-
-		SkeletalMesh->PostEditChange();
-	}
-
-	{
-		FString PhysName = ModelName + "_PhysicsAsset";
-		UPackage* PhysPackage = GetOrMakePackage(ModelPackageName, PhysName);
-		if (PhysPackage == NULL) {
-			return NULL;
-		}
-
-		UPhysicsAsset* PhysicsAsset = CastChecked<UPhysicsAsset>(
-			StaticConstructObject(UPhysicsAsset::StaticClass(), PhysPackage, *PhysName, RF_Standalone | RF_Public));
-		if (PhysicsAsset) {
-			// Notify the asset registry
-			FAssetRegistryModule::AssetCreated(PhysicsAsset);
-
-			// Set the dirty flag so this package will get saved later
-			PhysicsAsset->MarkPackageDirty();
-
-			// Create the data!
-			FPhysAssetCreateParams NewBodyData;
-			NewBodyData.Initialize();
-			NewBodyData.bBodyForAll = true;
-			FText CreationErrorMessage;
-			FPhysicsAssetUtils::CreateFromSkeletalMesh(PhysicsAsset, SkeletalMesh, NewBodyData, CreationErrorMessage);
-		}
-	}
-
-	{
-		FString AnimName = ModelName + "_Anim";
-		UPackage* AnimPackage = GetOrMakePackage(ModelPackageName, AnimName);
-		if (AnimPackage == NULL) {
-			return NULL;
-		}
-
-		UAnimSequence* AnimSeq = CastChecked<UAnimSequence>(
-			StaticConstructObject(UAnimSequence::StaticClass(), AnimPackage, *AnimName, RF_Standalone | RF_Public));
-		if (AnimSeq == NULL) {
-			return NULL;
-		}
-
-		// Notify the asset registry
-		FAssetRegistryModule::AssetCreated(AnimSeq);
-
-		// Set the dirty flag so this package will get saved later
-		AnimSeq->MarkPackageDirty();
-
-		AnimSeq->PreEditChange(NULL);
-
-		AnimSeq->SetSkeleton(Skeleton);
-
-		for (int j = 0; j < model.parts.Num(); ++j) {
-			const Zsc::Part& part = model.parts[j];
-			if (!part.animPath.IsEmpty()) {
-				Zmo anim(*(RoseBasePath + part.animPath));
-				FRawAnimSequenceTrack track;
-
-				AnimSeq->SequenceLength = (float)anim.frameCount / (float)anim.framesPerSecond;
-				AnimSeq->NumFrames = anim.frameCount;
-
-				track.PosKeys.Add(part.position);
-				track.RotKeys.Add(part.rotation);
-				track.ScaleKeys.Add(part.scale);
-
-				for (int i = 0; i < anim.channels.Num(); ++i) {
-					Zmo::Channel *channel = anim.channels[i];
-					if (channel->index != 0) {
-						DebugBreak();
-					}
-
-					if (channel->type() == Zmo::ChannelType::Position) {
-						auto posChannel = (Zmo::PositionChannel*)channel;
-						track.PosKeys.Empty();
-						for (int j = 0; j < posChannel->frames.Num(); ++j) {
-							track.PosKeys.Add(posChannel->frames[j]);
-						}
-					} else if (channel->type() == Zmo::ChannelType::Rotation) {
-						auto rotChannel = (Zmo::RotationChannel*)channel;
-						track.RotKeys.Empty();
-						for (int j = 0; j < rotChannel->frames.Num(); ++j) {
-							track.RotKeys.Add(rotChannel->frames[j]);
-						}
-					} else if (channel->type() == Zmo::ChannelType::Scale) {
-						auto scaleChannel = (Zmo::ScaleChannel*)channel;
-						track.ScaleKeys.Empty();
-						for (int j = 0; j < scaleChannel->frames.Num(); ++j) {
-							track.ScaleKeys.Add(scaleChannel->frames[j]);
-						}
-					} else {
-						DebugBreak();
-					}
-				}
-
-				AnimSeq->RawAnimationData.Add(track);
-				AnimSeq->AnimationTrackNames.Add(FName(*FString::Printf(TEXT("Part_%d"), j)));
-				AnimSeq->TrackToSkeletonMapTable.Add(FTrackToSkeletonMap(j));
-			}
-		}
-
-		AnimSeq->PostProcessSequence();
-
-		AnimSeq->PostEditChange();
-	}
-
-	return SkeletalMesh;
-	*/
-}
-
-
-
-UBlueprint* ImportWorldZscModelStatic(const FString& MdlTypeName, const Zsc& meshs, int modelIdx) {
-	const Zsc::Model& model = meshs.models[modelIdx];
-
-	FString BPPackageName = TEXT("/MAPS");
-	FString BPAssetName = FString::Printf(TEXT("%s_%d"), *MdlTypeName, modelIdx);
-
-	UPackage* BPPackage = GetOrMakePackage(BPPackageName, BPAssetName);
-	if (BPPackage == NULL) {
-		return NULL;
-	}
-
-	UBlueprint* Blueprint = FKismetEditorUtilities::CreateBlueprint(
-		AActor::StaticClass(), BPPackage, *BPAssetName, 
-		BPTYPE_Normal, UBlueprint::StaticClass(), 
-		UBlueprintGeneratedClass::StaticClass(), 
-		FName("RosePluginWhat"));
-
-	for (int j = 0; j < model.parts.Num(); ++j) {
-		const Zsc::Part& part = model.parts[j];
-		const Zsc::Texture& tex = meshs.textures[part.texIdx];
-		const FString& mesh = meshs.meshes[part.meshIdx];
-
-		FString ModelPackage, ModelName;
-		BuildAssetPath(ModelPackage, ModelName, mesh);
-		
-		UPackage* Package = GetOrMakePackage(ModelPackage, ModelName);
-		if (Package == NULL) {
-			return NULL;
-		}
-
-		UStaticMesh* StaticMesh = CastChecked<UStaticMesh>(
-			StaticConstructObject(UStaticMesh::StaticClass(), Package, *ModelName, RF_Standalone | RF_Public));
-		if (StaticMesh == NULL) {
-			return NULL;
-		}
-
-		// Notify the asset registry
-		FAssetRegistryModule::AssetCreated(StaticMesh);
-
-		// Set the dirty flag so this package will get saved later
-		StaticMesh->MarkPackageDirty();
-
-		// make sure it has a new lighting guid
-		StaticMesh->LightingGuid = FGuid::NewGuid();
-
-		// Set it to use textured lightmaps. Note that Build Lighting will do the error-checking (texcoordindex exists for all LODs, etc).
-		StaticMesh->LightMapResolution = 256;
-		StaticMesh->LightMapCoordinateIndex = 1;
-
-		new(StaticMesh->SourceModels) FStaticMeshSourceModel();
-		FStaticMeshSourceModel& SrcModel = StaticMesh->SourceModels[0];
-
-		FRawMesh RawMesh;
-		SrcModel.RawMeshBulkData->SaveRawMesh(RawMesh);
-		{
-			FString TexturePackage, TextureName;
-			BuildAssetPath(TexturePackage, TextureName, tex.filePath, "_Texture");
-			UTexture* UnrealTexture = ImportTexture(TexturePackage, TextureName, RoseBasePath + tex.filePath);
-
-			FString MaterialPackage, MaterialName;
-			BuildAssetPath(MaterialPackage, MaterialName, meshs.meshes[part.meshIdx]);
-			MaterialName = FString::Printf(TEXT("Model_%d_%d_Material"), modelIdx, j);
-			UMaterialInterface *UnrealMaterial = ImportMaterial(MaterialPackage, MaterialName, tex, UnrealTexture);
-
-			StaticMesh->Materials.Add(UnrealMaterial);
-
-			Zms meshZms(*(RoseBasePath + mesh));
-
-			RawMesh.VertexPositions.AddZeroed(meshZms.vertexPositions.Num());
-			for (int i = 0; i < meshZms.vertexPositions.Num(); ++i) {
-				RawMesh.VertexPositions[i] = meshZms.vertexPositions[i];
-			}
-
-			RawMesh.WedgeIndices.AddZeroed(meshZms.indexes.Num());
-			//RawMesh.WedgeTangentX.AddZeroed(meshZms.indexes.Num());
-			//RawMesh.WedgeTangentY.AddZeroed(meshZms.indexes.Num());
-			//RawMesh.WedgeTangentZ.AddZeroed(meshZms.indexes.Num());
-			for (int i = 0; i < meshZms.indexes.Num(); ++i) {
-				RawMesh.WedgeIndices[i] = meshZms.indexes[i];
-				//RawMesh.WedgeTangentZ[indexOffset + i] = meshZms.vertexNormals[meshZms.indexes[i]];
-			}
-
-			for (int k = 0; k < 4; ++k) {
-				if (meshZms.vertexUvs[k].Num() > 0) {
-					RawMesh.WedgeTexCoords[k].AddZeroed(meshZms.indexes.Num());
-					for (int i = 0; i < meshZms.indexes.Num(); ++i) {
-						RawMesh.WedgeTexCoords[k][i] = meshZms.vertexUvs[k][meshZms.indexes[i]];
-					}
-				}
-			}
-
-			int faceCount = meshZms.indexes.Num() / 3;
-			RawMesh.FaceMaterialIndices.AddZeroed(faceCount);
-			RawMesh.FaceSmoothingMasks.AddZeroed(faceCount);
-			for (int i = 0; i < faceCount; ++i) {
-				RawMesh.FaceMaterialIndices[i] = 0;
-				RawMesh.FaceSmoothingMasks[i] = 0;
-			}
-		}
-		SrcModel.RawMeshBulkData->SaveRawMesh(RawMesh);
-
-		SrcModel.BuildSettings.bRemoveDegenerates = true;
-		SrcModel.BuildSettings.bRecomputeNormals = false;
-		SrcModel.BuildSettings.bRecomputeTangents = false;
-
-		StaticMesh->Build(true);
-
-		// Set up the mesh collision
-		StaticMesh->CreateBodySetup();
-
-		// Create new GUID
-		StaticMesh->BodySetup->InvalidatePhysicsData();
-
-		// Per-poly collision for now
-		StaticMesh->BodySetup->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
-
-		// refresh collision change back to staticmesh components
-		RefreshCollisionChange(StaticMesh);
-
-		for (int32 SectionIndex = 0; SectionIndex < StaticMesh->Materials.Num(); SectionIndex++)
-		{
-			FMeshSectionInfo Info = StaticMesh->SectionInfoMap.Get(0, SectionIndex);
-			Info.bEnableCollision = true;
-			StaticMesh->SectionInfoMap.Set(0, SectionIndex, Info);
-		}
-
-		UStaticMeshComponent* MeshComp = ConstructObject<UStaticMeshComponent>(UStaticMeshComponent::StaticClass());
-		MeshComp->StaticMesh = StaticMesh;
-		MeshComp->SetRelativeLocationAndRotation(part.position, FRotator(part.rotation));
-		MeshComp->SetRelativeScale3D(part.scale);
-		FString MeshCompName = FString::Printf(TEXT("Part_%d"), j);
-		USCS_Node* MeshNode = Blueprint->SimpleConstructionScript->CreateNode(MeshComp, *MeshCompName);
-		Blueprint->SimpleConstructionScript->AddNode(MeshNode);
-	}
-
-	return Blueprint;
-}
-
-/* Old version that merges everything
-UStaticMesh* ImportWorldZscModelStatic(const FString& MdlTypeName, const Zsc& meshs, int modelIdx) {
-	const Zsc::Model& model = meshs.models[modelIdx];
-
-	FString ModelPackage, ModelName;
-	ModelPackage = TEXT("/MAPS");
-	ModelName = FString::Printf(TEXT("%s_%d"), *MdlTypeName, modelIdx);
-
-	UPackage* Package = GetOrMakePackage(ModelPackage, ModelName);
-	if (Package == NULL) {
-		return NULL;
-	}
-
-	UStaticMesh* StaticMesh = CastChecked<UStaticMesh>(
-		StaticConstructObject(UStaticMesh::StaticClass(), Package, *ModelName, RF_Standalone | RF_Public));
-	if (StaticMesh == NULL) {
-		return NULL;
-	}
-	
-	// Notify the asset registry
-	FAssetRegistryModule::AssetCreated(StaticMesh);
-
-	// Set the dirty flag so this package will get saved later
-	StaticMesh->MarkPackageDirty();
-
-	// make sure it has a new lighting guid
-	StaticMesh->LightingGuid = FGuid::NewGuid();
-
-	// Set it to use textured lightmaps. Note that Build Lighting will do the error-checking (texcoordindex exists for all LODs, etc).
-	StaticMesh->LightMapResolution = 256;
-	StaticMesh->LightMapCoordinateIndex = 1;
-
-	new(StaticMesh->SourceModels) FStaticMeshSourceModel();
-	FStaticMeshSourceModel& SrcModel = StaticMesh->SourceModels[0];
-
-	FRawMesh RawMesh;
-	SrcModel.RawMeshBulkData->SaveRawMesh(RawMesh);
-
-	TArray<FTransform> partTrans;
-	for (int j = 0; j < model.parts.Num(); ++j) {
-		const Zsc::Part& part = model.parts[j];
-		const Zsc::Texture& tex = meshs.textures[part.texIdx];
-
-		FTransform trans(part.rotation, part.position, part.scale);
-		if (j != 0 && part.parentIdx != 0xFFFF) {
-			trans = partTrans[part.parentIdx-1] * trans;
-		}
-		partTrans.Add(trans);
-
-		FString TexturePackage, TextureName;
-		BuildAssetPath(TexturePackage, TextureName, tex.filePath, "_Texture");
-		UTexture* UnrealTexture = ImportTexture(TexturePackage, TextureName, RoseBasePath + tex.filePath);
-
-		FString MaterialPackage, MaterialName;
-		BuildAssetPath(MaterialPackage, MaterialName, meshs.meshes[part.meshIdx]);
-		MaterialName = FString::Printf(TEXT("Model_%d_%d_Material"), modelIdx, j);
-		UMaterialInterface *UnrealMaterial = ImportMaterial(MaterialPackage, MaterialName, tex, UnrealTexture);
-
-		StaticMesh->Materials.Add(UnrealMaterial);
-		
-		Zms meshZms(*(RoseBasePath + meshs.meshes[part.meshIdx]));
-
-		int vertOffset = RawMesh.VertexPositions.Num();
-		RawMesh.VertexPositions.AddZeroed(meshZms.vertexPositions.Num());
-		for (int i = 0; i < meshZms.vertexPositions.Num(); ++i) {
-			RawMesh.VertexPositions[vertOffset + i] = trans.TransformPosition(meshZms.vertexPositions[i]);
-		}
-
-		int indexOffset = RawMesh.WedgeIndices.Num();
-		RawMesh.WedgeIndices.AddZeroed(meshZms.indexes.Num());
-		//RawMesh.WedgeTangentX.AddZeroed(meshZms.indexes.Num());
-		//RawMesh.WedgeTangentY.AddZeroed(meshZms.indexes.Num());
-		//RawMesh.WedgeTangentZ.AddZeroed(meshZms.indexes.Num());
-		for (int i = 0; i < meshZms.indexes.Num(); ++i) {
-			RawMesh.WedgeIndices[indexOffset + i] = vertOffset + meshZms.indexes[i];
-			//RawMesh.WedgeTangentZ[indexOffset + i] = meshZms.vertexNormals[meshZms.indexes[i]];
-		}
-
-		for (int k = 0; k < 1; ++k) {
-			if (meshZms.vertexUvs[k].Num() > 0) {
-				RawMesh.WedgeTexCoords[k].AddZeroed(meshZms.indexes.Num());
-				for (int i = 0; i < meshZms.indexes.Num(); ++i) {
-					RawMesh.WedgeTexCoords[k][indexOffset + i] = meshZms.vertexUvs[k][meshZms.indexes[i]];
-				}
-			}
-		}
-
-		int faceCount = meshZms.indexes.Num() / 3;
-		int faceOffset = RawMesh.FaceMaterialIndices.Num();
-		RawMesh.FaceMaterialIndices.AddZeroed(faceCount);
-		RawMesh.FaceSmoothingMasks.AddZeroed(faceCount);
-		for (int i = 0; i < faceCount; ++i) {
-			RawMesh.FaceMaterialIndices[faceOffset + i] = j;
-			RawMesh.FaceSmoothingMasks[faceOffset + i] = 0;
-		}
-	}
-
-	IMeshUtilities& MeshUtilities = FModuleManager::Get().LoadModuleChecked<IMeshUtilities>("MeshUtilities");
-	FText OutError;
-	float MinChartSpacingPercent = 1.0f;
-	float BorderSpacingPercent = 0.0f;
-	uint32 MaxCharts = 0;
-	float MaxDesiredStretch = 0.5;
-	MeshUtilities.GenerateUVs(RawMesh, 1, MinChartSpacingPercent, BorderSpacingPercent, true, NULL, MaxCharts, MaxDesiredStretch, OutError);
-
-	SrcModel.RawMeshBulkData->SaveRawMesh(RawMesh);
-
-	SrcModel.BuildSettings.bRemoveDegenerates = true;
-	SrcModel.BuildSettings.bRecomputeNormals = false;
-	SrcModel.BuildSettings.bRecomputeTangents = false;
-
-	StaticMesh->Build(true);
-	
-	// Set up the mesh collision
-	StaticMesh->CreateBodySetup();
-
-	// Create new GUID
-	StaticMesh->BodySetup->InvalidatePhysicsData();
-
-	// Per-poly collision for now
-	StaticMesh->BodySetup->CollisionTraceFlag = ECollisionTraceFlag::CTF_UseComplexAsSimple;
-
-	// refresh collision change back to staticmesh components
-	RefreshCollisionChange(StaticMesh);
-
-	for (int32 SectionIndex = 0; SectionIndex < StaticMesh->Materials.Num(); SectionIndex++)
-	{
-		FMeshSectionInfo Info = StaticMesh->SectionInfoMap.Get(0, SectionIndex);
-		Info.bEnableCollision = true;
-		StaticMesh->SectionInfoMap.Set(0, SectionIndex, Info);
-	}
-
-	return StaticMesh;
-}
-*/
-
-UBlueprint* ImportWorldZscModel(const FString& MdlTypeName, const Zsc& meshs, int modelIdx) {
-	const Zsc::Model& model = meshs.models[modelIdx];
-
-	bool NeedsAnim = false;
-	for (int i = 0; i < model.parts.Num(); ++i) {
-		if (!model.parts[i].animPath.IsEmpty()) {
-			NeedsAnim = true;
-			break;
-		}
-	}
-
-	if (NeedsAnim) {
-		return ImportWorldZscModelAnim(MdlTypeName, meshs, modelIdx);
-	} else {
-		return ImportWorldZscModelStatic(MdlTypeName, meshs, modelIdx);
-	}
 }
 
 AActor* SpawnWorldModel(const FString& NewName, const FString& PackageName, const FString& AssetName, const FQuat& Rot, const FVector& Pos, const FVector& Scale) {
@@ -1694,38 +1131,43 @@ AActor* SpawnWorldModel(const FString& NewName, const FString& PackageName, cons
 		ModelAct->SetActorScale3D(Scale);
 		return ModelAct;
 	}
-	/*
-	auto SkelMdl = Cast<USkeletalMesh>(Model);
-	if (SkelMdl) {
-		auto SkelActor = GWorld->SpawnActor<ASkeletalMeshActor>(MyPos, FRotator(Rot), SpawnInfo);
-		SkelActor->SetActorScale3D(MyScale);
-
-		auto MeshComp = SkelActor->SkeletalMeshComponent;
-		MeshComp->UnregisterComponent();
-		MeshComp->SetSkeletalMesh(SkelMdl);
-		MeshComp->RegisterComponent();
-
-		auto AnimSeq = GetExistingAsset<UAnimationAsset>(PackageName, AssetName + TEXT("_Anim"));
-		MeshComp->SetAnimationMode(EAnimationMode::AnimationSingleNode);
-		MeshComp->SetAnimation(AnimSeq);
-
-		return SkelActor;
-	}
 	
-	auto StaticMdl = Cast<UStaticMesh>(Model);
-	if (StaticMdl) {
-		auto StaticActor = GWorld->SpawnActor<AStaticMeshActor>(MyPos, FRotator(Rot), SpawnInfo);
-		StaticActor->SetActorScale3D(MyScale);
-
-		auto MeshComp = StaticActor->StaticMeshComponent;
-		MeshComp->UnregisterComponent();
-		StaticActor->StaticMeshComponent->SetStaticMesh(StaticMdl);
-		MeshComp->RegisterComponent();
-		return StaticActor;
-	}
-	*/
-
 	return NULL;
+}
+
+void CreateBrushForVolumeActor(AVolume* NewActor, UBrushBuilder* BrushBuilder)
+{
+	if (NewActor != NULL)
+	{
+		// this code builds a brush for the new actor
+		NewActor->PreEditChange(NULL);
+
+		NewActor->PolyFlags = 0;
+		NewActor->Brush = new(NewActor, NAME_None, RF_Transactional)UModel(FPostConstructInitializeProperties(), NULL, true);
+		NewActor->Brush->Polys = new(NewActor->Brush, NAME_None, RF_Transactional)UPolys(FPostConstructInitializeProperties());
+		NewActor->BrushComponent->Brush = NewActor->Brush;
+		if (BrushBuilder != nullptr)
+		{
+			NewActor->BrushBuilder = DuplicateObject<UBrushBuilder>(BrushBuilder, NewActor);
+		}
+
+		BrushBuilder->Build(NewActor->GetWorld(), NewActor);
+
+		FBSPOps::csgPrepMovingBrush(NewActor);
+
+		// Set the texture on all polys to NULL.  This stops invisible textures
+		// dependencies from being formed on volumes.
+		if (NewActor->Brush)
+		{
+			for (int32 poly = 0; poly < NewActor->Brush->Polys->Element.Num(); ++poly)
+			{
+				FPoly* Poly = &(NewActor->Brush->Polys->Element[poly]);
+				Poly->Material = NULL;
+			}
+		}
+
+		NewActor->PostEditChange();
+	}
 }
 
 void FBrettPlugin::StartButton_Clicked()
@@ -1774,22 +1216,26 @@ void FBrettPlugin::StartButton_Clicked()
 	SpawnWorldModel("TestObj2", "/MAPS", "JDTC_12", rot2, pos2, scale2);
 	//*/
 
-	//* LOAD ZSCs
-	Zsc meshsc(*(RoseBasePath + TEXT("3DDATA/JUNON/LIST_CNST_JDT.ZSC")));
-	for (int32 i = 0; i < meshsc.models.Num(); ++i) {
-		if (meshsc.models[i].parts.Num() > 0) {
-			ImportWorldZscModel("JDTC", meshsc, i);
+	const bool IMPORT_BUILDINGS = false;
+	const bool IMPORT_OBJECTS = false;
+	const bool IMPORT_COLLISIONS = false;
+
+	if (IMPORT_BUILDINGS) {
+		Zsc meshsc(*(RoseBasePath + TEXT("3DDATA/JUNON/LIST_CNST_JDT.ZSC")));
+		for (int32 i = 0; i < meshsc.models.Num(); ++i) {
+			if (meshsc.models[i].parts.Num() > 0) {
+				ImportWorldZscModel("JDTC", meshsc, i);
+			}
 		}
 	}
-	//*/
-	//*
-	Zsc meshsd(*(RoseBasePath + TEXT("3DDATA/JUNON/LIST_DECO_JDT.ZSC")));
-	for (int32 i = 0; i < meshsd.models.Num(); ++i) {
-		if (meshsd.models[i].parts.Num() > 0) {
-			ImportWorldZscModel("JDTD", meshsd, i);
+	if (IMPORT_OBJECTS) {
+		Zsc meshsd(*(RoseBasePath + TEXT("3DDATA/JUNON/LIST_DECO_JDT.ZSC")));
+		for (int32 i = 0; i < meshsd.models.Num(); ++i) {
+			if (meshsd.models[i].parts.Num() > 0) {
+				ImportWorldZscModel("JDTD", meshsd, i);
+			}
 		}
 	}
-	//*/
 
 
 	/*
@@ -1822,13 +1268,8 @@ void FBrettPlugin::StartButton_Clicked()
 	const float HIM_HEIGHT_MID = (HIM_HEIGHT_MAX - HIM_HEIGHT_MIN) / 2;
 	const float HIM_HEIGHT_MUL = (UEL_HEIGHT_MAX - UEL_HEIGHT_MIN) / (HIM_HEIGHT_MAX - HIM_HEIGHT_MIN);
 	const float UEL_ZSCALE = (UEL_HEIGHT_WMAX - UEL_HEIGHT_WMIN) / (HIM_HEIGHT_MAX - HIM_HEIGHT_MIN);
-	FActorSpawnParameters SpawnInfo;
-	SpawnInfo.Name = TEXT("TestThing");
-	FVector Location = FVector(0, 0, 0);
-	FRotator Rotation = FRotator(0, 0, 0);
-	ALandscape* Landscape = GWorld->SpawnActor<ALandscape>(Location, Rotation, SpawnInfo);
-	Landscape->SetActorScale3D(FVector(250.0f, 250.0f, 51200.0f / 51200.0f * 100.0f));
-	
+
+
 	int startX = 31;
 	int startY = 30;
 	int endX = 34;
@@ -1838,18 +1279,47 @@ void FBrettPlugin::StartButton_Clicked()
 	uint32 RoseSizeY = 4 * 16 * (endY - startY + 1);
 	uint32 SizeX = (RoseSizeX / 63 + 1) * 63 + 1;
 	uint32 SizeY = (RoseSizeY / 63 + 1) * 63 + 1;
+	uint32 TileSizeX = SizeX;
+	uint32 TileSizeY = SizeY;
+
 	TArray<uint16> Data;
 	Data.AddZeroed(SizeX * SizeY);
 	for (int i = 0; i < Data.Num(); ++i) {
 		Data[i] = 0x8000;
 	}
 
+	TArray<uint8> WeightData[8];
+	for (int32 i = 0; i < 8; ++i) {
+		WeightData[i].AddZeroed(TileSizeX*TileSizeY);
+	}
+
 	float MinHeight = +1000000;
 	float MaxHeight = -1000000;
 	for (int iy = startY; iy <= endY; ++iy) {
 		for (int ix = startX; ix <= endX; ++ix) {
+			int outTileX = (ix - startX) * 16;
+			int outTileY = (iy - startY) * 16;
 			int outBaseX = (ix - startX) * 64;
 			int outBaseY = (iy - startY) * 64;
+
+			FString TilPath = FString::Printf(TEXT("3DDATA/MAPS/JUNON/JDT01/%d_%d.til"), ix, iy);
+			Til tilData(*(RoseBasePath + TilPath));
+
+			for (int32 sy = 0; sy < 16; ++sy) {
+				for (int32 sx = 0; sx < 16; ++sx) {
+					int32 BrushIdx = tilData.Data[sy * 16 + sx].Brush;
+					check(BrushIdx >= 0 && BrushIdx < 8);
+
+					for (int32 py = 0; py < 5; ++py) {
+						for (int32 px = 0; px < 5; ++px) {
+							int32 PixelX = (outTileX + sx) * 4 + px;
+							int32 PixelY = (outTileY + sy) * 4 + py;
+
+							WeightData[BrushIdx][PixelY * TileSizeX + PixelX] = 50;
+						}
+					}
+				}
+			}
 
 			FString HimPath = FString::Printf(TEXT("3DDATA/MAPS/JUNON/JDT01/%d_%d.him"), ix, iy);
 			Him himData(*(RoseBasePath + HimPath));
@@ -1875,20 +1345,55 @@ void FBrettPlugin::StartButton_Clicked()
 			FString IfoPath = FString::Printf(TEXT("3DDATA/MAPS/JUNON/JDT01/%d_%d.ifo"), ix, iy);
 			Ifo ifoData(*(RoseBasePath + IfoPath));
 
-			for (int32 i = 0; i < ifoData.Buildings.Num(); ++i) {
-				const Ifo::FBuildingBlock& obj = ifoData.Buildings[i];
-				FString ObjName = FString::Printf(TEXT("Bldg_%d_%d_%d"), ix, iy, i);
-				FString AssetName = FString::Printf(TEXT("JDTC_%d"), obj.ObjectID);
-				AActor* ObjActor = SpawnWorldModel(ObjName, CnstPackageName, AssetName, obj.Rotation, obj.Position, obj.Scale);
+			if (IMPORT_BUILDINGS) {
+				for (int32 i = 0; i < ifoData.Buildings.Num(); ++i) {
+					const Ifo::FBuildingBlock& obj = ifoData.Buildings[i];
+					FString ObjName = FString::Printf(TEXT("Bldg_%d_%d_%d"), ix, iy, i);
+					FString AssetName = FString::Printf(TEXT("JDTC_%d"), obj.ObjectID);
+					AActor* ObjActor = SpawnWorldModel(ObjName, CnstPackageName, AssetName, obj.Rotation, obj.Position, obj.Scale);
+				}
 			}
+			if (IMPORT_OBJECTS) {
+				for (int32 i = 0; i < ifoData.Objects.Num(); ++i) {
+					const Ifo::FObjectBlock& obj = ifoData.Objects[i];
+					FString ObjName = FString::Printf(TEXT("Deco_%d_%d_%d"), ix, iy, i);
+					FString AssetName = FString::Printf(TEXT("JDTD_%d"), obj.ObjectID);
+					AActor* ObjActor = SpawnWorldModel(ObjName, CnstPackageName, AssetName, obj.Rotation, obj.Position, obj.Scale);
+					if (ObjActor) {
+						ObjActor->SetActorScale3D(obj.Scale);
+					}
+				}
+			}
+			if (IMPORT_COLLISIONS) {
+				for (int32 i = 0; i < ifoData.Collisions.Num(); ++i) {
+					const Ifo::FCollisionBlock& obj = ifoData.Collisions[i];
 
-			for (int32 i = 0; i < ifoData.Objects.Num(); ++i) {
-				const Ifo::FObjectBlock& obj = ifoData.Objects[i];
-				FString ObjName = FString::Printf(TEXT("Deco_%d_%d_%d"), ix, iy, i);
-				FString AssetName = FString::Printf(TEXT("JDTD_%d"), obj.ObjectID);
-				AActor* ObjActor = SpawnWorldModel(ObjName, CnstPackageName, AssetName, obj.Rotation, obj.Position, obj.Scale);
-				if (ObjActor) {
-					ObjActor->SetActorScale3D(obj.Scale);
+					FVector ColSize(120.0f * obj.Scale.X, 6.8f * obj.Scale.Y, 252.2f * obj.Scale.Z);
+					FVector RecenterPos =
+						FRotationTranslationMatrix(FRotator(obj.Rotation), FVector::ZeroVector)
+						.TransformPosition(FVector(0, 0, -ColSize.Z / 2));
+
+					FActorSpawnParameters SpawnInfo;
+					SpawnInfo.Name = *FString::Printf(TEXT("Collision_%d_%d_%d"), ix, iy, i);
+					ABlockingVolume* ObjColl = GWorld->SpawnActor<ABlockingVolume>(
+						obj.Position - RecenterPos, FRotator(obj.Rotation), SpawnInfo);
+
+					if (ObjColl) {
+						UCubeBuilder* Builder = ConstructObject<UCubeBuilder>(UCubeBuilder::StaticClass());
+						Builder->X = ColSize.X;
+						Builder->Y = ColSize.Y;
+						Builder->Z = ColSize.Z;
+						CreateBrushForVolumeActor(ObjColl, Builder);
+
+						ObjColl->BrushComponent->BuildSimpleBrushCollision();
+						if (ObjColl->BrushComponent->IsPhysicsStateCreated()) {
+							ObjColl->BrushComponent->RecreatePhysicsState();
+						}
+
+						ObjColl->BrushComponent->SetCollisionResponseToAllChannels(ECR_Block);
+						ObjColl->BrushComponent->SetCollisionResponseToChannel(ECC_Visibility, ECR_Ignore);
+						ObjColl->BrushComponent->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+					}
 				}
 			}
 		}
@@ -1896,20 +1401,89 @@ void FBrettPlugin::StartButton_Clicked()
 
 	UE_LOG(RosePlugin, Log, TEXT("Imported map height bounds were: %f, %f"), MinHeight, MaxHeight);
 
-	TArray<FLandscapeImportLayerInfo> LayerInfos;
-	FLandscapeImportLayerInfo LayerInfo;
-	LayerInfo.LayerData.Empty();
-	LayerInfo.LayerName = TEXT("TestLayer");
-	LayerInfos.Add(LayerInfo);
+	
 
-	Landscape->LandscapeMaterial = LoadObject<UMaterialInterface>(NULL, TEXT("/Engine/EngineMaterials/DefaultMaterial.DefaultMaterial"), NULL, LOAD_None, NULL);
+	FVector Location = FVector(0, 0, 0);
+	FRotator Rotation = FRotator(0, 0, 0);
+	ALandscape* Landscape = GWorld->SpawnActor<ALandscape>(Location, Rotation);
+	Landscape->PreEditChange(NULL);
+
+	Landscape->SetActorScale3D(FVector(250.0f, 250.0f, 51200.0f / 51200.0f * 100.0f));
+
+	UMaterial* LMaterial = LoadObject<UMaterial>(NULL, TEXT("/Game/ROSEImp/Terrain/Junon/JD_Material.JD_Material"), NULL, LOAD_None, NULL);
+	Landscape->LandscapeMaterial = LMaterial;
+
+	TArray<FLandscapeImportLayerInfo> LayerInfos;
+	auto LayerNames = Landscape->GetLayersFromMaterial();
+	for (int32 i = 0; i < LayerNames.Num(); ++i) {
+		const FName& LayerName = LayerNames[i];
+
+		FString LIPackageName = TEXT("/Layers");
+		FString LayerObjectName = FString::Printf(TEXT("LayerInfo_%d"), i);
+
+		UPackage* LIPackage = GetOrMakePackage(LIPackageName, LayerObjectName);
+		ULandscapeLayerInfoObject* LIData = ConstructObject<ULandscapeLayerInfoObject>(ULandscapeLayerInfoObject::StaticClass(), LIPackage, *LayerObjectName, RF_Public | RF_Standalone | RF_Transactional);
+		LIData->LayerName = LayerName;
+		LIData->bNoWeightBlend = false;
+
+		// Notify the asset registry
+		FAssetRegistryModule::AssetCreated(LIData);
+
+		// Mark the package dirty...
+		LIPackage->MarkPackageDirty();
+
+		FLandscapeImportLayerInfo LayerInfo;
+		if (LayerName.Compare(TEXT("Dirt")) == 0) {
+			LayerInfo.LayerData = WeightData[0];
+			UE_LOG(RosePlugin, Log, TEXT("Found Dirt Layer!"));
+		} else if (LayerName.Compare(TEXT("Grass1")) == 0) {
+			LayerInfo.LayerData = WeightData[1];
+			UE_LOG(RosePlugin, Log, TEXT("Found Grass1 Layer!"));
+		} else if (LayerName.Compare(TEXT("Grass2")) == 0) {
+			LayerInfo.LayerData = WeightData[3];
+			UE_LOG(RosePlugin, Log, TEXT("Found Grass2 Layer!"));
+		} else if (LayerName.Compare(TEXT("Rock")) == 0) {
+			LayerInfo.LayerData = WeightData[5];
+			UE_LOG(RosePlugin, Log, TEXT("Found Rock Layer!"));
+		} else {
+			LayerInfo.LayerData = WeightData[7];
+			UE_LOG(RosePlugin, Log, TEXT("Found Unknown Layer (%s)!"), *(LayerName.ToString()));
+		}
+		LayerInfo.LayerName = LayerName;
+		LayerInfo.LayerInfo = LIData;
+		LayerInfos.Add(LayerInfo);
+	}
+
 	Landscape->Import(FGuid::NewGuid(), SizeX, SizeY, 63, 1,  63, Data.GetData(), NULL, LayerInfos);
 	Landscape->StaticLightingLOD = FMath::DivideAndRoundUp(FMath::CeilLogTwo((SizeX * SizeY) / (2048 * 2048) + 1), (uint32)2);
 
 	Landscape->SetActorLocation(FVector((startX - 32) * 16000 - 8000, (startY - 32) * 16000 - 8000, 0));
 	Landscape->StaticLightingResolution = 4.0f;
+
 	ULandscapeInfo* LandscapeInfo = Landscape->GetLandscapeInfo(true);
 	LandscapeInfo->UpdateLayerInfoMap(Landscape);
+	
+	for (int32 i = 0; i < LayerInfos.Num(); i++)
+	{
+		if (LayerInfos[i].LayerInfo != NULL)
+		{
+			Landscape->EditorLayerSettings.Add(FLandscapeEditorLayerSettings(LayerInfos[i].LayerInfo));
+
+			int32 LayerInfoIndex = LandscapeInfo->GetLayerInfoIndex(LayerInfos[i].LayerName);
+			if (ensure(LayerInfoIndex != INDEX_NONE))
+			{
+				FLandscapeInfoLayerSettings& LayerSettings = LandscapeInfo->Layers[LayerInfoIndex];
+				LayerSettings.LayerInfoObj = LayerInfos[i].LayerInfo;
+			}
+		}
+	}
+	
+	Landscape->PostEditChange();
+
+	for (auto Component : Landscape->LandscapeComponents) {
+		Component->UpdateMaterialInstances();
+	}
+
 	//*/
 
 	/*

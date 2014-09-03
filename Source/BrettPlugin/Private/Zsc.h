@@ -4,6 +4,21 @@
 
 class Zsc {
 public:
+	struct CollisionType {
+		enum Type {
+			None = 0,
+			BoundingSphere = 1,
+			AxisAlignedBoundingBox = 2,
+			OrientedBoundingBox = 3,
+			Polygon = 4,
+			ModeMask = 7,
+
+			NotMoveable = 1 << 3,
+			NotPickable = 1 << 4,
+			HeightOnly = 1 << 5,
+			NoCameraCollide = 1 << 6
+		};
+	};
 	struct PropertyType {
 		enum Type {
 			Position = 1,

@@ -41,5 +41,10 @@
 #include "K2Node_VariableSet.h"
 #include "K2Node.h"
 #include "Editor/BlueprintGraph/Classes/EdGraphSchema_K2_Actions.h"
+#include "Editor/UnrealEd/Classes/Factories/CurveFactory.h"
+#include "Editor/UnrealEd/Public/BSPOps.h"
+#include "Runtime/Engine/Classes/Landscape/LandscapeLayerInfoObject.h"
+#include "Editor/LandscapeEditor/Public/LandscapeEdMode.h"
+#include "Runtime/Engine/Classes/Landscape/LandscapeComponent.h"
 
 DECLARE_LOG_CATEGORY_EXTERN(RosePlugin, Log, All);

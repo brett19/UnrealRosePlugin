@@ -41,6 +41,10 @@ public:
 	{
 	};
 
+	struct FCollisionBlock : public FMapBlock
+	{
+	};
+
 	Ifo(const TCHAR *Filename) {
 		FFileHelper::LoadFileToArray(rh.data, Filename);
 
@@ -61,6 +65,11 @@ public:
 				uint32 objCount = rh.read<uint32>();
 				for (uint32 j = 0; j < objCount; ++j) {
 					Buildings.Add(ReadBaseObject<FBuildingBlock>());
+				}
+			} else if (blockType == EBlockType::CollisionObject) {
+				uint32 objCount = rh.read<uint32>();
+				for (uint32 j = 0; j < objCount; ++j) {
+					Collisions.Add(ReadBaseObject<FCollisionBlock>());
 				}
 			}
 
@@ -86,6 +95,7 @@ public:
 
 	TArray<FBuildingBlock> Buildings;
 	TArray<FObjectBlock> Objects;
+	TArray<FCollisionBlock> Collisions;
 
 private:
 	ReadHelper rh;
