@@ -856,7 +856,7 @@ UBlueprint* ImportWorldZscModel(const FString& MdlTypeName, const Zsc& meshs, in
 		StaticMesh->LightingGuid = FGuid::NewGuid();
 
 		// Set it to use textured lightmaps. Note that Build Lighting will do the error-checking (texcoordindex exists for all LODs, etc).
-		StaticMesh->LightMapResolution = 256;
+		StaticMesh->LightMapResolution = 128;
 		StaticMesh->LightMapCoordinateIndex = 1;
 
 		new(StaticMesh->SourceModels) FStaticMeshSourceModel();
@@ -1216,8 +1216,8 @@ void FBrettPlugin::StartButton_Clicked()
 	SpawnWorldModel("TestObj2", "/MAPS", "JDTC_12", rot2, pos2, scale2);
 	//*/
 
-	const bool IMPORT_BUILDINGS = false;
-	const bool IMPORT_OBJECTS = false;
+	const bool IMPORT_BUILDINGS = true;
+	const bool IMPORT_OBJECTS = true;
 	const bool IMPORT_COLLISIONS = false;
 
 	if (IMPORT_BUILDINGS) {
@@ -1362,6 +1362,7 @@ void FBrettPlugin::StartButton_Clicked()
 					if (ObjActor) {
 						ObjActor->SetActorScale3D(obj.Scale);
 					}
+					
 				}
 			}
 			if (IMPORT_COLLISIONS) {
